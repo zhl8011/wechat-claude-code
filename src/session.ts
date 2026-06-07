@@ -1,16 +1,10 @@
-import { loadJson, saveJson } from './store.js';
+import { loadJson, saveJson, validateAccountId } from './store.js';
 import { mkdirSync } from 'node:fs';
-import { DATA_DIR } from './constants.js';
+import { DATA_DIR, DEFAULT_WORKING_DIR } from './constants.js';
 import { join } from 'node:path';
 import { logger } from './logger.js';
 
 const SESSIONS_DIR = join(DATA_DIR, 'sessions');
-
-function validateAccountId(accountId: string): void {
-  if (!/^[a-zA-Z0-9_.@=-]+$/.test(accountId)) {
-    throw new Error(`Invalid accountId: "${accountId}"`);
-  }
-}
 
 export type SessionState = 'idle' | 'processing';
 
@@ -41,7 +35,7 @@ export function createSessionStore() {
   function load(accountId: string): Session {
     validateAccountId(accountId);
     const session = loadJson<Session>(getSessionPath(accountId), {
-      workingDirectory: process.cwd(),
+      workingDirectory: DEFAULT_WORKING_DIR,
       state: 'idle',
       chatHistory: [],
       maxHistoryLength: DEFAULT_MAX_HISTORY,
@@ -74,7 +68,7 @@ export function createSessionStore() {
     const session: Session = {
       sdkSessionId: undefined,          // explicitly clear so Object.assign removes it
       previousSdkSessionId: undefined,
-      workingDirectory: currentSession?.workingDirectory ?? process.cwd(),
+      workingDirectory: currentSession?.workingDirectory ?? DEFAULT_WORKING_DIR,
       model: currentSession?.model,
       state: 'idle',
       chatHistory: [],

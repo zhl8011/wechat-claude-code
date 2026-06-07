@@ -2,6 +2,12 @@ import { readFileSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { logger } from "./logger.js";
 
+export function validateAccountId(accountId: string): void {
+  if (!/^[a-zA-Z0-9_.@=-]+$/.test(accountId)) {
+    throw new Error(`Invalid accountId: "${accountId}"`);
+  }
+}
+
 /**
  * Load a JSON file, returning a typed object or the fallback if the file
  * does not exist or cannot be parsed.

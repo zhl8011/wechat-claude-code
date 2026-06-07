@@ -1,5 +1,5 @@
 import { mkdirSync, appendFileSync, readdirSync, unlinkSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
 
 const LOG_DIR = join(homedir(), ".wechat-claude-code", "logs");
@@ -33,8 +33,9 @@ export function redact(obj: unknown): string {
   // Mask Bearer tokens: "Bearer <anything>"
   safe = safe.replace(/Bearer\s+[^\s"\\]+/gi, "Bearer ***");
   // Mask generic token/secret/password/api_key values in JSON
+  // Matches both snake_case (bot_token) and camelCase (botToken)
   safe = safe.replace(
-    /"(?:(?:[\w]+_)?token|secret|password|api_key)"\s*:\s*"[^"]*"/gi,
+    /"(?:(?:[\w]+_)?[Tt]oken|(?:[\w]+_)?[Ss]ecret|(?:[\w]+_)?[Pp]assword|(?:[\w]+_)?api_key|[Aa]es_[Kk]ey)"\s*:\s*"[^"]*"/gi,
     (match) => {
       const key = match.match(/"[^"]*"/)?.[0] ?? '""';
       return `${key}: "***"`;

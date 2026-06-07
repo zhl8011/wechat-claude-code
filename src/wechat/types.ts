@@ -47,8 +47,9 @@ export interface ImageItem {
 }
 
 export interface VoiceItem {
-  cdn_media: CDNMedia;
-  voice_text?: string;
+  media?: CDNMedia;
+  /** 语音转文字内容 */
+  text?: string;
 }
 
 export interface FileItem {

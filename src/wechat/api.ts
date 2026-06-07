@@ -5,12 +5,10 @@ import type {
 } from './types.js';
 import { logger } from '../logger.js';
 
-/** Generate a random uint32 and return its base64 representation. */
+/** Generate a random base64 identifier. */
 function generateUin(): string {
   const buf = new Uint8Array(4);
   crypto.getRandomValues(buf);
-  const view = new DataView(buf.buffer);
-  const uint32 = view.getUint32(0, false); // big-endian
   return Buffer.from(buf).toString('base64');
 }
 
@@ -101,7 +99,7 @@ export class WeChatApi {
     let delay = 10_000; // start with 10s backoff on rate-limit
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       const res = await this.request<{ ret?: number }>('ilink/bot/sendmessage', req);
-      if ((res as any)?.ret === -2) {
+      if (res.ret === -2) {
         if (attempt === MAX_RETRIES) {
           logger.warn('sendMessage rate-limited after max retries', { attempts: MAX_RETRIES });
           return; // give up silently rather than crash

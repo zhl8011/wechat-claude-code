@@ -1,6 +1,6 @@
 import { decryptAesEcb } from "./crypto.js";
 import { logger } from "../logger.js";
-import { CDN_BASE_URL } from "./accounts.js";
+import { CDN_BASE_URL } from "../constants.js";
 
 export function buildCdnDownloadUrl(encryptQueryParam: string): string {
   if (!/^[A-Za-z0-9%=&+._~\-/]+$/.test(encryptQueryParam)) {

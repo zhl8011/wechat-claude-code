@@ -3,6 +3,7 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { unlinkSync, writeFileSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 import { WeChatApi } from './wechat/api.js';
 import { saveAccount, loadLatestAccount, type AccountData } from './wechat/accounts.js';
@@ -142,7 +143,7 @@ async function runSetup(): Promise<void> {
     logger.warn('Failed to clean up QR image', { path: QR_PATH });
   }
 
-  const workingDir = await promptUser('请输入工作目录', process.cwd());
+  const workingDir = await promptUser('请输入工作目录', join(homedir(), 'Documents', 'ClaudeCode'));
   const config = loadConfig();
   config.workingDirectory = workingDir;
   saveConfig(config);
@@ -357,21 +358,31 @@ async function sendToClaude(
       }
     }
 
-    // Unified buffer: text deltas and tool summaries all go here
-    let pendingBuffer = '';
+    // Separate buffers: tool status vs actual text output
+    let toolBuffer: string[] = [];
+    let textBuffer = '';
+    let lastStatusSent = '';
     let anySent = false;
-    let lastSendTime = Date.now();
-    const SEND_INTERVAL_MS = 36_000;
+    const MAX_TOOL_BUFFER = 8;
 
-    async function trySend(force = false): Promise<void> {
-      if (!pendingBuffer.trim()) return;
-      const now = Date.now();
-      if (!force && now - lastSendTime < SEND_INTERVAL_MS) return;
-      const toSend = pendingBuffer.trim();
-      pendingBuffer = '';
+    // Send a compact status line from accumulated tool calls
+    async function flushToolStatus(): Promise<void> {
+      if (toolBuffer.length === 0) return;
+      const status = toolBuffer.join('\n');
+      toolBuffer = [];
+      if (status === lastStatusSent) return;
+      lastStatusSent = status;
+      anySent = true;
+      await sender.sendText(fromUserId, contextToken, status);
+    }
+
+    // Send accumulated text output
+    async function flushText(): Promise<void> {
+      if (!textBuffer.trim()) return;
+      const toSend = textBuffer.trim();
+      textBuffer = '';
       const chunks = splitMessage(toSend);
       for (const chunk of chunks) {
-        lastSendTime = Date.now();
         anySent = true;
         await sender.sendText(fromUserId, contextToken, chunk);
       }
@@ -379,19 +390,21 @@ async function sendToClaude(
 
     const queryOptions: QueryOptions = {
       prompt: userText || '请分析这张图片',
-      cwd: (session.workingDirectory || config.workingDirectory).replace(/^~/, process.env.HOME || ''),
+      cwd: (session.workingDirectory || config.workingDirectory).replace(/^~/, homedir()),
       resume: session.sdkSessionId,
       model: session.model,
       systemPrompt: config.systemPrompt,
       abortController,
       images,
       onText: async (delta: string) => {
-        pendingBuffer += delta;
-        await trySend();
+        // New text arriving → flush any pending tool status first, then buffer text
+        if (toolBuffer.length > 0) await flushToolStatus();
+        textBuffer += delta;
       },
       onThinking: async (summary: string) => {
-        pendingBuffer += (pendingBuffer ? '\n' : '') + summary;
-        await trySend();
+        // Buffer tool calls; flush when threshold reached
+        toolBuffer.push(summary);
+        if (toolBuffer.length >= MAX_TOOL_BUFFER) await flushToolStatus();
       },
     };
 
@@ -408,7 +421,8 @@ async function sendToClaude(
     }
 
     // Flush any remaining buffered content
-    await trySend(true);
+    await flushToolStatus();
+    await flushText();
 
     // Send result back to WeChat
     if (result.text) {
@@ -425,9 +439,9 @@ async function sendToClaude(
       }
     } else if (result.error) {
       logger.error('Claude query error', { error: result.error });
-      await sender.sendText(fromUserId, contextToken, '⚠️ Claude 处理请求时出错，请稍后重试。');
+      await sender.sendText(fromUserId, contextToken, 'Claude 处理请求时出错，请稍后重试。');
     } else if (!anySent) {
-      await sender.sendText(fromUserId, contextToken, 'ℹ️ Claude 无返回内容（可能因权限被拒而终止）');
+      await sender.sendText(fromUserId, contextToken, 'Claude 无返回内容（可能因权限被拒而终止）');
     }
 
     // Update session with new SDK session ID
@@ -442,7 +456,7 @@ async function sendToClaude(
     } else {
       const errorMsg = err instanceof Error ? err.message : String(err);
       logger.error('Error in sendToClaude', { error: errorMsg });
-      await sender.sendText(fromUserId, contextToken, '⚠️ 处理消息时出错，请稍后重试。');
+      await sender.sendText(fromUserId, contextToken, '处理消息时出错，请稍后重试。');
     }
     session.state = 'idle';
     sessionStore.save(account.accountId, session);

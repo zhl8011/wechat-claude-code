@@ -8,7 +8,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { logger } from "../logger.js";
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join, dirname } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -44,22 +44,52 @@ export interface QueryResult {
 // ---------------------------------------------------------------------------
 
 /**
+ * Tools that should be hidden from the user (internal bookkeeping).
+ */
+const HIDDEN_TOOLS = new Set([
+  'TodoWrite', 'TodoRead', 'Task', 'Agent',
+]);
+
+/**
+ * Extract MCP service name: mcp__zread__read_file → zread
+ */
+function getMcpServiceName(name: string): string | null {
+  if (!name.startsWith('mcp__')) return null;
+  const parts = name.split('__');
+  return parts.length >= 3 ? parts[1] : null;
+}
+
+/**
  * Format a tool_use block into a concise human-readable summary.
  */
-function formatToolUse(toolName: string, input: Record<string, unknown>): string {
-  const icons: Record<string, string> = {
-    Bash: "🔧", Read: "📖", Write: "✏️", Edit: "✏️", MultiEdit: "✏️",
-    Grep: "🔍", Glob: "🔍", WebFetch: "🌐", WebSearch: "🌐",
-    TodoWrite: "📝", TodoRead: "📝", Task: "🤖",
+function formatToolUse(toolName: string, input: Record<string, unknown>): string | null {
+  if (HIDDEN_TOOLS.has(toolName)) return null;
+
+  // MCP tools: simple "调用 xxx MCP"
+  const mcpService = getMcpServiceName(toolName);
+  if (mcpService) {
+    return `▸ 调用 ${mcpService} MCP`;
+  }
+
+  const labels: Record<string, string> = {
+    Bash: "执行", Read: "读取", Write: "写入", Edit: "编辑", MultiEdit: "编辑",
+    Grep: "搜索", Glob: "搜索", WebFetch: "抓取", WebSearch: "搜索",
+    Skill: "使用",
   };
-  const icon = icons[toolName] ?? "⚙️";
+  const label = labels[toolName] ?? "调用";
+
   let detail = "";
-  if (input.command) detail = String(input.command).slice(0, 80);
-  else if (input.file_path) detail = String(input.file_path);
-  else if (input.pattern) detail = String(input.pattern).slice(0, 60);
-  else if (input.query) detail = String(input.query).slice(0, 60);
+  if (input.command) detail = String(input.command).slice(0, 60);
+  else if (input.file_path) {
+    const p = String(input.file_path);
+    detail = p.split('/').slice(-2).join('/');
+  }
   else if (input.url) detail = String(input.url).slice(0, 60);
-  return detail ? `${icon} ${toolName}: ${detail}` : `${icon} ${toolName}`;
+  else if (input.query) detail = String(input.query).slice(0, 50);
+  else if (input.pattern) detail = String(input.pattern).slice(0, 50);
+  else if (input.search_query) detail = String(input.search_query).slice(0, 50);
+
+  return detail ? `▸ ${label} ${detail}` : `▸ ${label} ${toolName}`;
 }
 
 /**
@@ -125,8 +155,14 @@ async function* singleUserMessage(
 function resolveGlobalClaudeCliPath(): string | undefined {
   try {
     const claudeBin = execSync("which claude", { encoding: "utf8" }).trim();
-    // Resolve symlinks to get the actual file
-    const realBin = execSync(`readlink -f "${claudeBin}" 2>/dev/null || realpath "${claudeBin}" 2>/dev/null || echo "${claudeBin}"`, { encoding: "utf8" }).trim();
+    if (!claudeBin) return undefined;
+    // Resolve symlinks safely via fs.realpathSync instead of shell interpolation
+    let realBin: string;
+    try {
+      realBin = realpathSync(claudeBin);
+    } catch {
+      realBin = claudeBin;
+    }
     // On npm global installs, the binary itself is cli.js
     if (realBin.endsWith(".js") && existsSync(realBin)) return realBin;
     // Otherwise look for cli.js next to the binary
@@ -230,16 +266,15 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
                     (block as any).name ?? "Tool",
                     (block as any).input ?? {},
                   );
-                  await onThinking(summary);
+                  if (summary) await onThinking(summary);
                 }
               }
             }
           }
-          // Accumulate text; only call onText if not already streaming via stream_event
+          // Accumulate text (actual streaming is handled via stream_event below)
           const text = extractText(aMsg);
           if (text) {
             textParts.push(text);
-            if (onText && !sdkOptions.includePartialMessages) await onText(text);
           }
           break;
         }
