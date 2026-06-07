@@ -71,12 +71,12 @@ export async function downloadImage(item: MessageItem): Promise<string | null> {
   }
 }
 
-/**
- * Extract text content from a message item.
- * Returns text_item.text or empty string.
- */
 export function extractText(item: MessageItem): string {
-  return item.text_item?.text ?? '';
+  if (item.text_item?.text) return item.text_item.text;
+  if (item.voice_item?.voice_text) return item.voice_item.voice_text;
+  if (item.file_item?.file_name) return `[用户发送了文件: ${item.file_item.file_name}]`;
+  if (item.type === MessageItemType.VIDEO) return '[用户发送了视频]';
+  return '';
 }
 
 /**

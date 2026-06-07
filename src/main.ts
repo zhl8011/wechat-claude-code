@@ -298,7 +298,7 @@ async function handleMessage(
   // -- Normal message -> Claude --
 
   if (!userText && !imageItem) {
-    await sender.sendText(fromUserId, contextToken, '暂不支持此类型消息，请发送文字或图片');
+    await sender.sendText(fromUserId, contextToken, '暂不支持此类型消息，请发送文字、语音或图片');
     return;
   }
 
