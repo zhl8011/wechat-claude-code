@@ -55,7 +55,27 @@ function parseBlocks(text: string): string[] {
   return text.split(/\n\n+/).filter(block => block.length > 0);
 }
 
-/** Fallback: split a single oversized block at newline boundaries. */
+/** Find a safe split point that won't break markdown formatting. */
+function findSafeSplitPoint(text: string, maxLen: number): number {
+  // Try newline first (preserves list items, paragraphs)
+  let idx = text.lastIndexOf('\n', maxLen);
+  if (idx >= maxLen * 0.3) return idx;
+
+  // Try sentence-ending punctuation
+  const sentenceEnd = /[。！？.!?]$/;
+  for (let i = maxLen; i >= maxLen * 0.5; i--) {
+    if (sentenceEnd.test(text.slice(i - 1, i))) return i;
+  }
+
+  // Try space (won't split mid-word or mid-markdown)
+  idx = text.lastIndexOf(' ', maxLen);
+  if (idx >= maxLen * 0.3) return idx;
+
+  // Last resort: hard cut
+  return maxLen;
+}
+
+/** Fallback: split a single oversized block at safe boundaries. */
 function splitByNewline(text: string, maxLen: number): string[] {
   const chunks: string[] = [];
   let remaining = text;
@@ -64,10 +84,7 @@ function splitByNewline(text: string, maxLen: number): string[] {
       chunks.push(remaining);
       break;
     }
-    let splitIdx = remaining.lastIndexOf('\n', maxLen);
-    if (splitIdx < maxLen * 0.3) {
-      splitIdx = maxLen;
-    }
+    const splitIdx = findSafeSplitPoint(remaining, maxLen);
     chunks.push(remaining.slice(0, splitIdx));
     remaining = remaining.slice(splitIdx).replace(/^\n+/, '');
   }
@@ -481,6 +498,7 @@ async function sendToClaude(
     const MIN_FLUSH_LEN = 200;
     const SOFT_FLUSH_LIMIT = 1800;
     const MAX_BUFFER_AGE_MS = 3000;
+    const MIN_BATCH_FLUSH_LEN = 80;
 
     /** Check if buffer ends at a structural boundary (double newline or horizontal rule). */
     function endsWithStructuralBoundary(text: string): boolean {
@@ -490,7 +508,7 @@ async function sendToClaude(
     // Serial promise chain — each flushText() appends to the chain, no flags needed
     let flushChain: Promise<void> = Promise.resolve();
 
-    function flushText(): void {
+    function flushText(): Promise<void> {
       flushChain = flushChain.then(async () => {
         const toSend = textBuffer.trim();
         if (!toSend) return;
@@ -505,6 +523,7 @@ async function sendToClaude(
       }).catch((err) => {
         logger.error('flushText send failed', { error: err instanceof Error ? err.message : String(err) });
       });
+      return flushChain;
     }
 
     // Safety net: flush stale buffers that haven't been sent due to no structural boundary
@@ -536,16 +555,20 @@ async function sendToClaude(
         textBuffer += delta;
         lastBufferChangeTime = Date.now();
 
-        // Flush at structural boundaries or when approaching size limit
+        // Flush at structural boundaries (only if buffer is substantial) or when approaching size limit
         const shouldFlush =
-          endsWithStructuralBoundary(textBuffer)
+          (endsWithStructuralBoundary(textBuffer) && textBuffer.trim().length >= MIN_BATCH_FLUSH_LEN)
           || textBuffer.length > SOFT_FLUSH_LIMIT;
 
         if (shouldFlush) {
           await flushText();
         }
       },
-      onBlockEnd: () => flushText(),
+      onBlockEnd: () => {
+        if (textBuffer.trim().length >= MIN_BATCH_FLUSH_LEN || textBuffer.length > SOFT_FLUSH_LIMIT) {
+          flushText();
+        }
+      },
     };
 
     let result = await claudeQuery(queryOptions);
