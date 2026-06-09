@@ -185,11 +185,26 @@ async function runDaemon(): Promise<void> {
   const sharedCtx = { lastContextToken: '' };
   const activeControllers = new Map<string, AbortController>();
 
+  // -- Message queue for serial processing --
+  const messageQueue: WeixinMessage[] = [];
+  let processingQueue = false;
+
+  async function drainQueue(): Promise<void> {
+    if (processingQueue) return;
+    processingQueue = true;
+    while (messageQueue.length > 0) {
+      const msg = messageQueue.shift()!;
+      await handleMessage(msg, account!, session, sessionStore, sender, config, sharedCtx, activeControllers, messageQueue);
+    }
+    processingQueue = false;
+  }
+
   // -- Wire the monitor callbacks --
 
   const callbacks: MonitorCallbacks = {
     onMessage: async (msg: WeixinMessage) => {
-      await handleMessage(msg, account, session, sessionStore, sender, config, sharedCtx, activeControllers);
+      messageQueue.push(msg);
+      drainQueue();
     },
     onSessionExpired: () => {
       logger.warn('Session expired, will keep retrying...');
@@ -229,6 +244,7 @@ async function handleMessage(
   config: ReturnType<typeof loadConfig>,
   sharedCtx: { lastContextToken: string },
   activeControllers: Map<string, AbortController>,
+  messageQueue: WeixinMessage[],
 ): Promise<void> {
   // Filter: only user messages with required fields
   if (msg.message_type !== MessageType.USER) return;
@@ -243,14 +259,19 @@ async function handleMessage(
   const imageItem = extractFirstImageUrl(msg.item_list);
   const fileItem = extractFirstFileItem(msg.item_list);
 
-  // Concurrency guard: abort current query when new message arrives
+  // Concurrency guard: only /clear and /stop can interrupt; other messages queue naturally
   if (session.state === 'processing') {
-    if (userText.startsWith('/clear')) {
+    if (userText.startsWith('/stop')) {
       const ctrl = activeControllers.get(account.accountId);
       if (ctrl) { ctrl.abort(); activeControllers.delete(account.accountId); }
       session.state = 'idle';
       sessionStore.save(account.accountId, session);
-    } else if (!userText.startsWith('/')) {
+      // Discard all queued messages
+      messageQueue.length = 0;
+      await sender.sendText(fromUserId, contextToken, '⏹ 已停止当前对话，排队中的消息已清空。');
+      return;
+    }
+    if (userText.startsWith('/clear')) {
       const ctrl = activeControllers.get(account.accountId);
       if (ctrl) { ctrl.abort(); activeControllers.delete(account.accountId); }
       session.state = 'idle';

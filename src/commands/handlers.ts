@@ -10,6 +10,7 @@ const HELP_TEXT = `可用命令：
 
 会话管理：
   /help             显示帮助
+  /stop             停止当前对话并清空排队消息
   /clear            清除当前会话
   /reset            完全重置（包括工作目录等设置）
   /status           查看当前会话状态
