@@ -506,16 +506,20 @@ async function sendToClaude(
     let flushChain: Promise<void> = Promise.resolve();
 
     function flushText(): Promise<void> {
+      // Capture and clear synchronously to prevent race condition:
+      // new deltas can arrive while the chain awaits sendText,
+      // causing the async callback to clear content it never captured.
+      const captured = textBuffer.trim();
+      textBuffer = '';
+      if (!captured) return flushChain;
+
       flushChain = flushChain.then(async () => {
-        const toSend = textBuffer.trim();
-        if (!toSend) return;
-        textBuffer = '';
-        const chunks = splitMessage(toSend);
+        const chunks = splitMessage(captured);
         for (const chunk of chunks) {
-          anySent = true;
-          lastSentTime = Date.now();
           await sender.sendText(fromUserId, contextToken, chunk);
         }
+        anySent = true;
+        lastSentTime = Date.now();
       }).catch((err) => {
         logger.error('flushText send failed', { error: err instanceof Error ? err.message : String(err) });
       });
@@ -524,9 +528,22 @@ async function sendToClaude(
 
     // Safety net: send keepalive if nothing was sent for 5 minutes
     const SILENCE_WARNING_MS = 5 * 60 * 1000;
+    const SILENCE_MESSAGES = [
+      '我还在处理中，这个问题有点复杂，请再稍等一下',
+      '正在努力干活中，马上就有结果了，请稍等片刻',
+      '有点复杂正在处理，再给我一点时间，很快就好',
+      '快好了别着急，正在收尾阶段，马上给你回复',
+      '还在跑呢，任务量比较大，不过马上就能出结果了',
+      '任务比想象的复杂一些，再等等我，正在全力处理',
+      '正在处理中，进展顺利，再等一会儿就好',
+      '还没完不过已经快了，再给我一分钟就能搞定',
+      '我在认真思考这个问题，请再稍等一会儿',
+      '稍微有点棘手，不过已经快解决了，再等我一下',
+    ];
     flushTimer = setInterval(() => {
       if (Date.now() - lastSentTime > SILENCE_WARNING_MS) {
-        sender.sendText(fromUserId, contextToken, '我还在处理，请稍等一下').catch(() => {});
+        const msg = SILENCE_MESSAGES[Math.floor(Math.random() * SILENCE_MESSAGES.length)];
+        sender.sendText(fromUserId, contextToken, msg).catch(() => {});
         lastSentTime = Date.now();
       }
     }, 2000);
@@ -613,8 +630,36 @@ async function sendToClaude(
         return AUTO_PUSH_EXTENSIONS.has(ext) && existsSync(f);
       });
       if (pushable.length > 0) {
+        const failedFiles: string[] = [];
         for (const filePath of pushable) {
-          await sender.sendFile(fromUserId, contextToken, filePath);
+          try {
+            await sender.sendFile(fromUserId, contextToken, filePath);
+          } catch {
+            failedFiles.push(filePath);
+          }
+        }
+        if (failedFiles.length > 0) {
+          // Server-side rate limit requires longer cooldown (observed ret:-2 even after 9s backoff)
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const delay = (attempt + 1) * 15_000;
+            logger.warn(`Rate-limited, retrying ${failedFiles.length} file(s) in ${delay / 1000}s (attempt ${attempt + 1}/3)`);
+            await new Promise(r => setTimeout(r, delay));
+            const stillFailed: string[] = [];
+            for (const filePath of failedFiles) {
+              try {
+                await sender.sendFile(fromUserId, contextToken, filePath);
+              } catch {
+                stillFailed.push(filePath);
+              }
+            }
+            if (stillFailed.length === 0) break;
+            failedFiles.length = 0;
+            failedFiles.push(...stillFailed);
+          }
+          if (failedFiles.length > 0) {
+            logger.error('File delivery failed after all retries', { files: failedFiles });
+            await sender.sendText(fromUserId, contextToken, `文件推送失败（服务端限频），请稍后重试。`).catch(() => {});
+          }
         }
       }
     }

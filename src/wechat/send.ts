@@ -173,7 +173,10 @@ export function createSender(api: WeChatApi, botAccountId: string) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error('Failed to send file', { filePath: resolved, error: msg });
-      await sendText(toUserId, contextToken, `发送文件失败: ${msg}`);
+      if (!msg.includes('rate-limited')) {
+        await sendText(toUserId, contextToken, `发送文件失败: ${msg}`);
+      }
+      throw err;
     }
   }
 
