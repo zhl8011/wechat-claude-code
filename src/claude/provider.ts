@@ -21,6 +21,8 @@ export interface QueryOptions {
   }>;
   /** Called each time an assistant text chunk is produced (e.g. before/after tool calls). */
   onText?: (text: string) => Promise<void> | void;
+  /** Called when a content block ends — use to flush buffered text. */
+  onBlockEnd?: () => Promise<void> | void;
   /** Optional abort controller to cancel the query (e.g. when user sends a new message). */
   abortController?: AbortController;
 }
@@ -69,6 +71,7 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
     systemPrompt,
     images,
     onText,
+    onBlockEnd,
     abortController,
   } = options;
 
@@ -220,6 +223,7 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
             }
           } else if (evt?.type === 'content_block_stop') {
             trackingSkill = false;
+            if (onBlockEnd) Promise.resolve(onBlockEnd()).catch(() => {});
           }
           break;
         }

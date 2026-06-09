@@ -266,8 +266,28 @@ async function runDaemon(): Promise<void> {
 
   // -- Wire the monitor callbacks --
 
+  /** Handle priority commands (/stop, /clear) immediately, bypassing the serial queue. */
+  function handlePriorityCommand(msg: WeixinMessage): boolean {
+    if (msg.message_type !== MessageType.USER || !msg.item_list) return false;
+    const text = extractTextFromItems(msg.item_list);
+    if (!text.startsWith('/stop') && !text.startsWith('/clear')) return false;
+    if (session.state !== 'processing') return false;
+
+    const ctrl = activeControllers.get(account!.accountId);
+    if (ctrl) { ctrl.abort(); activeControllers.delete(account!.accountId); }
+    session.state = 'idle';
+    sessionStore.save(account!.accountId, session);
+
+    if (text.startsWith('/stop')) {
+      messageQueue.length = 0;
+      sender.sendText(msg.from_user_id!, msg.context_token ?? '', '⏹ 已停止当前对话，排队中的消息已清空。').catch(() => {});
+    }
+    return true;
+  }
+
   const callbacks: MonitorCallbacks = {
     onMessage: async (msg: WeixinMessage) => {
+      if (handlePriorityCommand(msg)) return;
       messageQueue.push(msg);
       drainQueue();
     },
@@ -325,26 +345,9 @@ async function handleMessage(
   const imageItem = extractFirstImageUrl(msg.item_list);
   const fileItem = extractFirstFileItem(msg.item_list);
 
-  // Concurrency guard: only /clear and /stop can interrupt; other messages queue naturally
-  if (session.state === 'processing') {
-    if (userText.startsWith('/stop')) {
-      const ctrl = activeControllers.get(account.accountId);
-      if (ctrl) { ctrl.abort(); activeControllers.delete(account.accountId); }
-      session.state = 'idle';
-      sessionStore.save(account.accountId, session);
-      // Discard all queued messages
-      messageQueue.length = 0;
-      await sender.sendText(fromUserId, contextToken, '⏹ 已停止当前对话，排队中的消息已清空。');
-      return;
-    }
-    if (userText.startsWith('/clear')) {
-      const ctrl = activeControllers.get(account.accountId);
-      if (ctrl) { ctrl.abort(); activeControllers.delete(account.accountId); }
-      session.state = 'idle';
-      sessionStore.save(account.accountId, session);
-    } else if (!userText.startsWith('/status') && !userText.startsWith('/help')) {
-      return;
-    }
+  // Drop non-command messages while processing (priority commands already handled upstream)
+  if (session.state === 'processing' && !userText.startsWith('/')) {
+    return;
   }
 
   // -- Command routing --
@@ -499,21 +502,22 @@ async function sendToClaude(
           lastSentTime = Date.now();
           await sender.sendText(fromUserId, contextToken, chunk);
         }
+      }).catch((err) => {
+        logger.error('flushText send failed', { error: err instanceof Error ? err.message : String(err) });
       });
     }
 
     // Safety net: flush stale buffers that haven't been sent due to no structural boundary
     const SILENCE_WARNING_MS = 5 * 60 * 1000;
-    let silenceWarned = false;
     flushTimer = setInterval(() => {
       // Only flush when buffer is stale (no new content for MAX_BUFFER_AGE_MS)
       if (textBuffer.length > MIN_FLUSH_LEN && Date.now() - lastBufferChangeTime > MAX_BUFFER_AGE_MS) {
         flushText();
       }
-      // Send a keepalive if nothing was sent for 5 minutes
-      if (!silenceWarned && Date.now() - lastSentTime > SILENCE_WARNING_MS) {
-        silenceWarned = true;
+      // Send a keepalive if nothing was sent for 5 minutes (repeats every 5 min)
+      if (Date.now() - lastSentTime > SILENCE_WARNING_MS) {
         sender.sendText(fromUserId, contextToken, '我还在处理，请稍等一下').catch(() => {});
+        lastSentTime = Date.now();
       }
     }, 2000);
 
@@ -541,6 +545,7 @@ async function sendToClaude(
           await flushText();
         }
       },
+      onBlockEnd: () => flushText(),
     };
 
     let result = await claudeQuery(queryOptions);
