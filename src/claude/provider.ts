@@ -211,7 +211,7 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
             try {
               const parsed = JSON.parse(skillInputAccum);
               if (parsed.skill) {
-                const msg = `\n正在调用 ${parsed.skill}\n\n`;
+                const msg = `\n正在调用 ${parsed.skill} 技能\n\n`;
                 if (onText) Promise.resolve(onText(msg)).catch(() => {});
                 trackingSkill = false;
               }
