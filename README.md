@@ -10,10 +10,9 @@
   <a href="README_en.md"><img src="https://img.shields.io/badge/Lang-English-lightgrey?style=flat-square" alt="English"></a>
 </p>
 
-扫码绑定微信后，你的微信里会多出一个"好友"。给它发消息，消息会自动转发给你电脑上运行的 Claude Code，回复也会实时推送到微信。支持文字、图片、语音、文件的收发。
+扫码绑定微信后，你的微信里会多出一个好友。给它发消息，消息会自动转发给你电脑上运行的 Claude Code，回复也会实时推送到微信。支持文字、图片、语音、文件的收发。
 
-<img width="1800" height="704" alt="banner" src="https://github.com/user-attachments/assets/d33c081d-bbae-49d0-9c89-e7635de6c6e7" />
-
+<img width="3018" height="1216" alt="ScreenShot_2026-06-10_211251_410" src="https://github.com/user-attachments/assets/2ba4c53b-9c63-4ffd-bd0a-71935a6eabec" />
 
 ## 核心亮点
 
