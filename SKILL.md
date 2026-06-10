@@ -19,7 +19,7 @@ description: 微信消息桥接 - 在微信中与 Claude Code 聊天。支持文
 **方式一：通过 skills CLI（推荐）**
 
 ```bash
-npx skills add Wechat-ggGitHub/wechat-claude-code -g -a claude-code -y
+npx skills add Wechat-ggGitHub/wechat-claude-code
 ```
 
 首次触发时 skill 会自动克隆完整项目源码并安装依赖。
