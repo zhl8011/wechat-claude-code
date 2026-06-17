@@ -55,7 +55,7 @@ async function cleanup(cwd: string): Promise<void> {
 
 test('handleResume: empty args returns list reply, handled=true', async () => {
   const cwd = uniqueCwd('list');
-  await seed(cwd, [{ uuid: 'a', mtimeAgoMs: 0, prompt: 'hi' }]);
+  await seed(cwd, [{ uuid: 'a', mtimeAgoMs: 10 * 60_000, prompt: 'hi' }]); // 10 min ago → inactive
   const captured: CapturedUpdate = { calls: [] };
   const ctx = makeCtx(cwd, captured);
   try {
@@ -70,16 +70,15 @@ test('handleResume: empty args returns list reply, handled=true', async () => {
   }
 });
 
-test('handleResume: numeric index resumes that session', async () => {
+test('handleResume: numeric index resumes inactive session', async () => {
   const cwd = uniqueCwd('idx');
   await seed(cwd, [
-    { uuid: 'first', mtimeAgoMs: 0, prompt: 'first' },
-    { uuid: 'second', mtimeAgoMs: 60_000, prompt: 'second' },
+    { uuid: 'first', mtimeAgoMs: 10 * 60_000, prompt: 'first' },   // 10 min ago → index 1
+    { uuid: 'second', mtimeAgoMs: 20 * 60_000, prompt: 'second' }, // 20 min ago → index 2
   ]);
   const captured: CapturedUpdate = { calls: [] };
   const ctx = makeCtx(cwd, captured);
   try {
-    // sorted by mtime desc → 'first' (mtime 0) is index 1, 'second' (mtime 1m ago) is index 2
     const r = await handleResume(ctx, '1');
     assert.equal(r.handled, true);
     assert.equal(captured.calls.length, 1);
@@ -92,7 +91,7 @@ test('handleResume: numeric index resumes that session', async () => {
 
 test('handleResume: index out of range replies with error', async () => {
   const cwd = uniqueCwd('oor');
-  await seed(cwd, [{ uuid: 'a', mtimeAgoMs: 0, prompt: 'p' }]);
+  await seed(cwd, [{ uuid: 'a', mtimeAgoMs: 10 * 60_000, prompt: 'p' }]);
   const captured: CapturedUpdate = { calls: [] };
   const ctx = makeCtx(cwd, captured);
   try {
@@ -135,19 +134,20 @@ test('handleResume: active session with --force resumes', async () => {
   }
 });
 
-test('handleResume: uuid form resumes directly', async () => {
+test('handleResume: full UUID form resumes inactive session', async () => {
   const cwd = uniqueCwd('uuid');
+  // Use a real-looking UUID format so it passes UUID_REGEX
+  const realUuid = '12345678-1234-1234-1234-123456789abc';
   await seed(cwd, [
-    { uuid: 'alpha', mtimeAgoMs: 0, prompt: 'a' },
-    { uuid: 'beta', mtimeAgoMs: 60_000, prompt: 'b' },
+    { uuid: realUuid, mtimeAgoMs: 10 * 60_000, prompt: 'real' },
   ]);
   const captured: CapturedUpdate = { calls: [] };
   const ctx = makeCtx(cwd, captured);
   try {
-    const r = await handleResume(ctx, 'beta');
+    const r = await handleResume(ctx, realUuid);
     assert.equal(r.handled, true);
     assert.equal(captured.calls.length, 1);
-    assert.equal(captured.calls[0].sdkSessionId, 'beta');
+    assert.equal(captured.calls[0].sdkSessionId, realUuid);
   } finally {
     await cleanup(cwd);
   }

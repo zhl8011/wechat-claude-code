@@ -235,12 +235,6 @@ export function handleUnknown(cmd: string, args: string): CommandResult {
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Guard window: warn if the session was written 30s..5min ago. Sessions
-// touched more recently (<30s) are treated as just-created by the bridge
-// itself — safe to take over. Sessions older than 5min are clearly idle.
-const RESUME_GUARD_MIN_MS = 30_000;
-const RESUME_GUARD_MAX_MS = 5 * 60_000;
-
 export async function handleResume(ctx: CommandContext, args: string): Promise<CommandResult> {
   const cwd = ctx.session.workingDirectory;
   const trimmed = args.trim();
@@ -262,42 +256,32 @@ export async function handleResume(ctx: CommandContext, args: string): Promise<C
   }
 
   let uuid: string | undefined;
-  let targetSess: { uuid: string; mtime: Date; firstUserPrompt: string; source: 'bridge' | 'unknown'; isActive: boolean } | undefined;
   if (/^\d+$/.test(target)) {
     // Numeric index
     const limit = 10;
     const sessions = await listSessions(cwd, limit);
     const idx = parseInt(target, 10) - 1;
-    targetSess = sessions[idx];
-    if (!targetSess) {
+    const sess = sessions[idx];
+    if (!sess) {
       return { reply: '编号无效，请先 /resume 查看列表', handled: true };
     }
-    uuid = targetSess.uuid;
-  } else {
-    // Non-numeric target: accept any non-UUID string as a session identifier
-    // (could be a UUID prefix or a short label). Look it up in the dir.
+    uuid = sess.uuid;
+  } else if (UUID_REGEX.test(target)) {
+    // UUID form — confirm it actually exists in the dir
     const sessions = await listSessions(cwd, 100);
-    targetSess = sessions.find((s) => s.uuid === target || s.uuid.startsWith(target));
-    if (!targetSess) {
-      // Fall back: maybe the user pasted a full UUID or short prefix.
-      // Refuse only when the token looks completely bogus (contains spaces
-      // or weird chars). UUID_REGEX handles the strict-format case.
-      if (!UUID_REGEX.test(target) && !/^[0-9a-f-]+$/i.test(target)) {
-        return { reply: '格式无效，参考：/resume 1 或 /resume <uuid>', handled: true };
-      }
+    const sess = sessions.find((s) => s.uuid === target);
+    if (!sess) {
       return { reply: '未找到该 session，可能已被删除。', handled: true };
     }
-    uuid = targetSess.uuid;
+    uuid = sess.uuid;
+  } else {
+    return { reply: '格式无效，参考：/resume 1 或 /resume <uuid>', handled: true };
   }
 
-  // Active-session check: warn if the session was modified between
-  // 30s and 5min ago, AND the user is selecting by numeric index
-  // (i.e. might have misclicked). UUID-form selection is treated as
-  // deliberate — the user knows the exact id, so skip the warning.
-  const elapsed = Date.now() - targetSess.mtime.getTime();
-  const recentlyWritten = elapsed >= RESUME_GUARD_MIN_MS && elapsed < RESUME_GUARD_MAX_MS;
-  const isNumericSelection = /^\d+$/.test(target);
-  if (recentlyWritten && isNumericSelection && !force) {
+  // Active-session check (applies to both numeric and UUID forms)
+  const sessions = await listSessions(cwd, 100);
+  const targetSess = sessions.find((s) => s.uuid === uuid);
+  if (targetSess?.isActive && !force) {
     return {
       reply: `⚠️ session 活跃（${formatAgeForReply(targetSess.mtime)}写过），可能是 CLI 还开着。\n强行接管加 --force：/resume ${target} --force`,
       handled: true,
