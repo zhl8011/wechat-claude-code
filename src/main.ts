@@ -18,6 +18,7 @@ import { loadConfig, saveConfig } from './config.js';
 import { logger } from './logger.js';
 import { DATA_DIR } from './constants.js';
 import { MessageType, type WeixinMessage } from './wechat/types.js';
+import { appendBridgeSessionId } from './commands/session-lister.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -618,6 +619,12 @@ async function sendToClaude(
     session.sdkSessionId = result.sessionId || undefined;
     session.state = 'idle';
     sessionStore.save(account.accountId, session);
+
+    // Record this UUID as bridge-spawned so /resume can label it correctly.
+    // Failure here must not block the message flow.
+    if (result.sessionId) {
+      await appendBridgeSessionId(result.sessionId);
+    }
 
     // Auto-push deliverable files mentioned in Claude's response
     if (result.text) {
