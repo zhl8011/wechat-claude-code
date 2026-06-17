@@ -18,6 +18,7 @@ const HELP_TEXT = `可用命令：
   /status           查看当前会话状态
   /compact          压缩上下文（开始新 SDK 会话，保留历史）
   /history [数量]   查看对话记录（默认最近20条）
+  /resume           列出最近 10 条 session，可接管
   /undo [数量]      撤销最近对话（默认1条）
 
 文件：
