@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   ACTIVE_THRESHOLD_MS,
+  appendBridgeSessionId,
   encodeCwd,
+  formatSessionList,
   getBridgeSessionsPath,
   getSessionDir,
   listSessions,
@@ -192,3 +194,76 @@ test('listSessions: non-user first line yields placeholder, not skip', async () 
     await cleanupCwd(cwd);
   }
 });
+
+const SENTINEL_UUID_PREFIX = '00000000-0000-0000-0000-';
+
+test('appendBridgeSessionId: writes new uuid', async () => {
+  const uuid = SENTINEL_UUID_PREFIX + Math.random().toString(16).slice(2, 14).padEnd(12, '0');
+  try {
+    await appendBridgeSessionId(uuid);
+    const raw = await fs.readFile(getBridgeSessionsPath(), 'utf-8');
+    const arr = JSON.parse(raw);
+    assert.ok(Array.isArray(arr));
+    assert.ok(arr.includes(uuid));
+  } finally {
+    await removeSentinel(uuid);
+  }
+});
+
+test('appendBridgeSessionId: deduplicates same uuid', async () => {
+  const uuid = SENTINEL_UUID_PREFIX + Math.random().toString(16).slice(2, 14).padEnd(12, '0');
+  try {
+    await appendBridgeSessionId(uuid);
+    await appendBridgeSessionId(uuid);
+    const raw = await fs.readFile(getBridgeSessionsPath(), 'utf-8');
+    const arr = JSON.parse(raw);
+    const count = arr.filter((x: string) => x === uuid).length;
+    assert.equal(count, 1);
+  } finally {
+    await removeSentinel(uuid);
+  }
+});
+
+test('formatSessionList: empty array', () => {
+  const out = formatSessionList([]);
+  assert.ok(out.includes('暂无 session'));
+});
+
+test('formatSessionList: includes uuid, source, active marker', () => {
+  const now = Date.now();
+  const sessions = [
+    {
+      uuid: 'abc-123-active',
+      mtime: new Date(now - 60_000),
+      firstUserPrompt: 'just now',
+      source: 'bridge' as const,
+      isActive: true,
+    },
+    {
+      uuid: 'xyz-789-old',
+      mtime: new Date(now - 3600_000),
+      firstUserPrompt: 'long ago',
+      source: 'unknown' as const,
+      isActive: false,
+    },
+  ];
+  const out = formatSessionList(sessions);
+  assert.ok(out.includes('abc-123-active'));
+  assert.ok(out.includes('xyz-789-old'));
+  assert.ok(out.includes('活跃'));
+  assert.ok(out.includes('桥'));
+  assert.ok(out.includes('CLI/其他'));
+  assert.ok(out.includes('1分钟前'));
+  assert.ok(out.includes('1小时前'));
+});
+
+async function removeSentinel(uuid: string): Promise<void> {
+  try {
+    const raw = await fs.readFile(getBridgeSessionsPath(), 'utf-8');
+    const arr: string[] = JSON.parse(raw);
+    const filtered = arr.filter((x) => x !== uuid);
+    await fs.writeFile(getBridgeSessionsPath(), JSON.stringify(filtered, null, 2));
+  } catch {
+    // file may not exist yet
+  }
+}

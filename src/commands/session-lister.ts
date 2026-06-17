@@ -98,3 +98,66 @@ export async function listSessions(cwd: string, limit = 10): Promise<SessionInfo
   results.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
   return results.slice(0, limit);
 }
+
+/**
+ * Record that the bridge spawned a session with this UUID. Idempotent:
+ * adding the same UUID twice leaves only one entry. Atomic via tmp+rename.
+ * Never throws — log+swallow on failure so message flow is not interrupted.
+ */
+export async function appendBridgeSessionId(uuid: string): Promise<void> {
+  const path = getBridgeSessionsPath();
+  const dir = join(homedir(), '.wechat-claude-code');
+  let list: string[] = [];
+  try {
+    const raw = await fs.readFile(path, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) list = parsed.filter((x): x is string => typeof x === 'string');
+  } catch {
+    // file missing or unreadable — start empty
+  }
+  if (list.includes(uuid)) return;
+
+  list.push(uuid);
+  const tmp = path + '.tmp';
+  try {
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(tmp, JSON.stringify(list, null, 2));
+    await fs.rename(tmp, path);
+  } catch (err) {
+    logger.warn('session-lister: failed to persist bridge session id', {
+      uuid,
+      error: (err as Error).message,
+    });
+    // Best-effort cleanup
+    try { await fs.unlink(tmp); } catch { /* ignore */ }
+  }
+}
+
+function formatAge(d: Date): string {
+  const ms = Date.now() - d.getTime();
+  if (ms < 60_000) return '刚刚';
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return `${m}分钟前`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}小时前`;
+  return `${Math.floor(h / 24)}天前`;
+}
+
+/**
+ * Render a session list for the WeChat reply.
+ */
+export function formatSessionList(sessions: SessionInfo[]): string {
+  if (sessions.length === 0) {
+    return '📋 当前目录暂无 session。\n先在 CLI 跑一句 / 微信发一句再试。';
+  }
+  const lines = [`📋 最近 ${sessions.length} 条 session：\n`];
+  sessions.forEach((s, i) => {
+    const marker = s.isActive ? '🟢' : '  ';
+    const tag = s.isActive ? ' [活跃]' : '';
+    const src = s.source === 'bridge' ? '桥' : 'CLI/其他';
+    lines.push(`${marker} [${i + 1}] ${formatAge(s.mtime).padEnd(8)} ${src}${tag} ${s.uuid}`);
+    lines.push(`    Q: ${s.firstUserPrompt}`);
+  });
+  lines.push('\n发送 /resume <编号> 接管；活跃 session 加 --force');
+  return lines.join('\n');
+}
