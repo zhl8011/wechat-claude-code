@@ -1,7 +1,7 @@
 import type { Session } from '../session.js';
 import { findSkill } from '../claude/skill-scanner.js';
 import { logger } from '../logger.js';
-import { handleHelp, handleClear, handleCwd, handleModel, handleStatus, handleSkills, handleHistory, handleReset, handleCompact, handleUndo, handleVersion, handlePrompt, handleSend, handleUnknown } from './handlers.js';
+import { handleHelp, handleClear, handleCwd, handleModel, handleStatus, handleSkills, handleHistory, handleReset, handleCompact, handleUndo, handleVersion, handlePrompt, handleResume, handleSend, handleUnknown } from './handlers.js';
 
 export interface CommandContext {
   accountId: string;
@@ -30,7 +30,7 @@ export interface CommandResult {
  *   /skills   - List all installed skills
  *   /<skill>  - Invoke a skill by name (args are forwarded to Claude)
  */
-export function routeCommand(ctx: CommandContext): CommandResult {
+export async function routeCommand(ctx: CommandContext): Promise<CommandResult> {
   const text = ctx.text.trim();
 
   if (!text.startsWith('/')) {
@@ -71,6 +71,8 @@ export function routeCommand(ctx: CommandContext): CommandResult {
     case 'version':
     case 'v':
       return handleVersion();
+    case 'resume':
+      return handleResume(ctx, args);
     default:
       return handleUnknown(cmd, args);
   }

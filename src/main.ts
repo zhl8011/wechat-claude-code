@@ -384,7 +384,7 @@ async function handleMessage(
       text: userText,
     };
 
-    const result: CommandResult = routeCommand(ctx);
+    const result: CommandResult = await routeCommand(ctx);
 
     if (result.handled && result.reply) {
       await sender.sendText(fromUserId, contextToken, result.reply);
