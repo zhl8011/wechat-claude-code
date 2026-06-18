@@ -233,6 +233,12 @@ function formatAge(d: Date): string {
 
 /**
  * Render a session list for the WeChat reply.
+ *
+ * WeChat folds a long single TEXT item into a grey "long message" card that
+ * wraps awkwardly. For this output the natural row/line boundaries are
+ * important — each session should be its own chat bubble. Use
+ * `formatSessionListBubbles` instead of this when posting to WeChat.
+ * This function is kept for callers that need one string (logs, tests).
  */
 export function formatSessionList(sessions: SessionInfo[]): string {
   if (sessions.length === 0) {
@@ -248,4 +254,37 @@ export function formatSessionList(sessions: SessionInfo[]): string {
   });
   lines.push('\n发送 /resume <编号> 接管；活跃 session 加 --force');
   return lines.join('\n');
+}
+
+/**
+ * Render a session list as one short WeChat message per row, so the bridge
+ * can fire a separate `sendText()` for each. Each row is a single line:
+ *   `[N] <age>  <src>[tag]  <uuid8>  Q: <prompt>`
+ * with a header bubble first ("📋 最近 N 条 session:") and a footer bubble
+ * last ("发送 /resume <编号> ..."). Total: N + 2 bubbles.
+ *
+ * UUIDs are truncated to the first 8 hex chars (the collision risk for
+ * 10-session listings on a single project is negligible and this halves
+ * the line length, keeping each bubble well below WeChat's long-message
+ * threshold). Full UUIDs can still be passed to `/resume <uuid>` — the
+ * handler accepts the short form as a prefix match would be unsafe, so
+ * pass the full UUID; we keep the short form for display only.
+ */
+export function formatSessionListBubbles(sessions: SessionInfo[]): string[] {
+  if (sessions.length === 0) {
+    return ['📋 当前目录暂无 session。\n先在 CLI 跑一句 / 微信发一句再试。'];
+  }
+  const out: string[] = [];
+  out.push(`📋 最近 ${sessions.length} 条 session：`);
+  sessions.forEach((s, i) => {
+    const marker = s.isActive ? '🟢' : '⚪';
+    const tag = s.isActive ? ' [活跃]' : '';
+    const src = s.source === 'bridge' ? '桥' : 'CLI/其他';
+    const uuidShort = s.uuid.slice(0, 8);
+    out.push(
+      `${marker} [${i + 1}] ${formatAge(s.mtime).padEnd(8)} ${src}${tag}  ${uuidShort}\nQ: ${s.firstUserPrompt}`,
+    );
+  });
+  out.push('发送 /resume <编号> 接管；活跃 session 加 --force');
+  return out;
 }

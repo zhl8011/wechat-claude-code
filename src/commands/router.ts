@@ -13,7 +13,20 @@ export interface CommandContext {
 }
 
 export interface CommandResult {
+  /**
+   * Single-message reply. The bridge sends this as one WeChat TEXT item.
+   * For commands whose output is naturally multi-row (e.g. /resume list),
+   * prefer `replies` instead — WeChat folds a long single TEXT item into a
+   * grey "long message" card that wraps awkwardly, whereas several short
+   * TEXT items render as separate chat bubbles.
+   */
   reply?: string;
+  /**
+   * Multi-bubble reply. The bridge sends each entry as its own WeChat
+   * TEXT item, in order. Use this when the output has natural row/line
+   * boundaries that should each appear as a separate bubble.
+   */
+  replies?: string[];
   handled: boolean;
   claudePrompt?: string;
   sendFile?: string; // Absolute path to a file to send to the user

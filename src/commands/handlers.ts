@@ -1,5 +1,5 @@
 import type { CommandContext, CommandResult } from './router.js';
-import { listSessions, formatSessionList } from './session-lister.js';
+import { listSessions, formatSessionList, formatSessionListBubbles } from './session-lister.js';
 import { scanAllSkills, formatSkillList, findSkill, type SkillInfo } from '../claude/skill-scanner.js';
 import { loadConfig, saveConfig } from '../config.js';
 import { DEFAULT_WORKING_DIR } from '../constants.js';
@@ -243,7 +243,9 @@ export async function handleResume(ctx: CommandContext, args: string): Promise<C
   // No args → list
   if (!trimmed) {
     const sessions = await listSessions(cwd, 10);
-    return { reply: formatSessionList(sessions), handled: true };
+    // Emit one WeChat bubble per row so the list does not get folded into
+    // a single grey "long message" card by the WeChat client.
+    return { replies: formatSessionListBubbles(sessions), handled: true };
   }
 
   // Parse tokens

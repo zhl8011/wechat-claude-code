@@ -68,9 +68,13 @@ test('handleResume: empty args returns list reply, handled=true', async () => {
   try {
     const r = await handleResume(ctx, '');
     assert.equal(r.handled, true);
-    assert.ok(r.reply);
-    assert.ok(r.reply!.includes('最近 1 条 session'));
-    assert.ok(r.reply!.includes('a'));
+    // /resume list returns a multi-bubble reply: header + per-row bubbles
+    // (so WeChat doesn't fold it into one grey "long message" card).
+    const bubbles = r.replies ?? (r.reply ? [r.reply] : []);
+    assert.ok(bubbles.length >= 2, 'expected at least header + 1 row bubble');
+    const joined = bubbles.join('\n');
+    assert.ok(joined.includes('最近 1 条 session'));
+    assert.ok(joined.includes('a'));
     assert.equal(captured.calls.length, 0, 'must not update session on list');
   } finally {
     await cleanup(cwd);
@@ -181,8 +185,48 @@ test('handleResume: empty project replies with "暂无 session"', async () => {
   try {
     const r = await handleResume(ctx, '');
     assert.equal(r.handled, true);
-    assert.ok(r.reply!.includes('暂无 session'));
+    // Empty case is a single short message; either replies=[msg] or reply=msg is fine.
+    const bubbles = r.replies ?? (r.reply ? [r.reply] : []);
+    assert.equal(bubbles.length, 1);
+    assert.ok(bubbles[0].includes('暂无 session'));
     assert.equal(captured.calls.length, 0);
+  } finally {
+    await cleanup(cwd);
+  }
+});
+
+test('handleResume: list emits one bubble per session so WeChat does not fold them', async () => {
+  // WeChat renders a single long TEXT item as a grey "long message" card and
+  // /resume was hitting that for 10+ sessions. The handler now returns a
+  // `replies: string[]` so the bridge can fire one sendText() per item.
+  const cwd = uniqueCwd('split');
+  await seed(cwd, [
+    { uuid: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', mtimeAgoMs: 30_000, prompt: 'first' },
+    { uuid: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', mtimeAgoMs: 120_000, prompt: 'second' },
+    { uuid: 'cccccccc-cccc-cccc-cccc-cccccccccccc', mtimeAgoMs: 7_200_000, prompt: 'third' },
+  ]);
+  const captured: CapturedUpdate = { calls: [] };
+  const ctx = makeCtx(cwd, captured);
+  try {
+    const r = await handleResume(ctx, '');
+    assert.equal(r.handled, true);
+    assert.ok(Array.isArray(r.replies), 'replies must be an array');
+    // header + 3 row bubbles + footer = 5
+    assert.equal(r.replies!.length, 5);
+    // Each bubble is short enough that WeChat will render it as a normal bubble,
+    // not fold it into a long-message card.
+    for (const b of r.replies!) {
+      assert.ok(b.length < 200, `bubble too long (${b.length}): ${b}`);
+    }
+    // Row 1 (most recent, 30s ago) is active and shows the active marker.
+    assert.ok(r.replies![1].includes('🟢'));
+    assert.ok(r.replies![1].includes('aaaaaaaa'));
+    assert.ok(r.replies![1].includes('first'));
+    // Row 3 is inactive (2h old) and is bridge-spawned only if seed marked it so;
+    // here all 3 are CLI-typed, so source column shows "CLI/其他".
+    assert.ok(r.replies![3].includes('CLI/其他'));
+    // Footer mentions /resume usage.
+    assert.ok(r.replies![4].includes('/resume <编号>'));
   } finally {
     await cleanup(cwd);
   }

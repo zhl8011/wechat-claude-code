@@ -387,9 +387,20 @@ async function handleMessage(
 
     const result: CommandResult = await routeCommand(ctx);
 
-    if (result.handled && result.reply) {
-      await sender.sendText(fromUserId, contextToken, result.reply);
-      return;
+    if (result.handled) {
+      // Multi-bubble reply: each entry is its own WeChat TEXT item. Use this
+      // when the output has natural row boundaries (e.g. /resume list) so the
+      // client doesn't fold everything into one long-message card.
+      if (result.replies && result.replies.length > 0) {
+        for (const bubble of result.replies) {
+          await sender.sendText(fromUserId, contextToken, bubble);
+        }
+        return;
+      }
+      if (result.reply) {
+        await sender.sendText(fromUserId, contextToken, result.reply);
+        return;
+      }
     }
 
     if (result.handled && result.claudePrompt) {
