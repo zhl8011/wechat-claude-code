@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import type { CommandContext } from '../commands/router.js';
 import { handleResume } from '../commands/handlers.js';
-import { getSessionDir } from '../commands/session-lister.js';
+import { appendBridgeSessionId, getSessionDir, getBridgeSessionsPath } from '../commands/session-lister.js';
 
 interface CapturedUpdate {
   calls: Array<Record<string, unknown>>;
@@ -58,6 +58,21 @@ async function seed(cwd: string, sessions: Array<{ uuid: string; mtimeAgoMs: num
 
 async function cleanup(cwd: string): Promise<void> {
   await fs.rm(getSessionDir(cwd), { recursive: true, force: true });
+}
+
+/**
+ * Remove a uuid from bridge-sessions.json so the lister stops flagging
+ * it as active. Best-effort: file may not exist yet.
+ */
+async function removeSentinel(uuid: string): Promise<void> {
+  try {
+    const raw = await fs.readFile(getBridgeSessionsPath(), 'utf-8');
+    const arr: string[] = JSON.parse(raw);
+    const filtered = arr.filter((x) => x !== uuid);
+    await fs.writeFile(getBridgeSessionsPath(), JSON.stringify(filtered, null, 2));
+  } catch {
+    // file may not exist yet
+  }
 }
 
 test('handleResume: empty args returns list reply, handled=true', async () => {
@@ -117,30 +132,36 @@ test('handleResume: index out of range replies with error', async () => {
 
 test('handleResume: active session without --force is rejected', async () => {
   const cwd = uniqueCwd('active');
-  await seed(cwd, [{ uuid: 'fresh', mtimeAgoMs: 60_000, prompt: 'p' }]);
-  const captured: CapturedUpdate = { calls: [] };
-  const ctx = makeCtx(cwd, captured);
+  // isActive is now "bridge owns this uuid" (not jsonl mtime). Mark it
+  // explicitly via appendBridgeSessionId so the lister flags it active.
+  await appendBridgeSessionId('fresh');
   try {
+    await seed(cwd, [{ uuid: 'fresh', mtimeAgoMs: 60_000, prompt: 'p' }]);
+    const captured: CapturedUpdate = { calls: [] };
+    const ctx = makeCtx(cwd, captured);
     const r = await handleResume(ctx, '1');
     assert.equal(r.handled, true);
     assert.ok(r.reply!.includes('活跃'));
     assert.equal(captured.calls.length, 0);
   } finally {
+    await removeSentinel('fresh');
     await cleanup(cwd);
   }
 });
 
 test('handleResume: active session with --force resumes', async () => {
   const cwd = uniqueCwd('force');
-  await seed(cwd, [{ uuid: 'fresh', mtimeAgoMs: 60_000, prompt: 'p' }]);
-  const captured: CapturedUpdate = { calls: [] };
-  const ctx = makeCtx(cwd, captured);
+  await appendBridgeSessionId('fresh');
   try {
+    await seed(cwd, [{ uuid: 'fresh', mtimeAgoMs: 60_000, prompt: 'p' }]);
+    const captured: CapturedUpdate = { calls: [] };
+    const ctx = makeCtx(cwd, captured);
     const r = await handleResume(ctx, '1 --force');
     assert.equal(r.handled, true);
     assert.equal(captured.calls.length, 1);
     assert.equal(captured.calls[0].sdkSessionId, 'fresh');
   } finally {
+    await removeSentinel('fresh');
     await cleanup(cwd);
   }
 });
@@ -200,14 +221,17 @@ test('handleResume: list emits one bubble per session so WeChat does not fold th
   // /resume was hitting that for 10+ sessions. The handler now returns a
   // `replies: string[]` so the bridge can fire one sendText() per item.
   const cwd = uniqueCwd('split');
-  await seed(cwd, [
-    { uuid: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', mtimeAgoMs: 30_000, prompt: 'first' },
-    { uuid: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', mtimeAgoMs: 120_000, prompt: 'second' },
-    { uuid: 'cccccccc-cccc-cccc-cccc-cccccccccccc', mtimeAgoMs: 7_200_000, prompt: 'third' },
-  ]);
-  const captured: CapturedUpdate = { calls: [] };
-  const ctx = makeCtx(cwd, captured);
+  // Row 1 is bridge-owned (active marker 🟢), rows 2 and 3 are CLI-only
+  // (no active marker, source = "CLI/其他").
+  await appendBridgeSessionId('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
   try {
+    await seed(cwd, [
+      { uuid: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', mtimeAgoMs: 30_000, prompt: 'first' },
+      { uuid: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', mtimeAgoMs: 120_000, prompt: 'second' },
+      { uuid: 'cccccccc-cccc-cccc-cccc-cccccccccccc', mtimeAgoMs: 7_200_000, prompt: 'third' },
+    ]);
+    const captured: CapturedUpdate = { calls: [] };
+    const ctx = makeCtx(cwd, captured);
     const r = await handleResume(ctx, '');
     assert.equal(r.handled, true);
     assert.ok(Array.isArray(r.replies), 'replies must be an array');
@@ -218,16 +242,18 @@ test('handleResume: list emits one bubble per session so WeChat does not fold th
     for (const b of r.replies!) {
       assert.ok(b.length < 200, `bubble too long (${b.length}): ${b}`);
     }
-    // Row 1 (most recent, 30s ago) is active and shows the active marker.
+    // Row 1 is bridge-owned → active marker 🟢 + "桥 [活跃]" source.
     assert.ok(r.replies![1].includes('🟢'));
+    assert.ok(r.replies![1].includes('桥'));
     assert.ok(r.replies![1].includes('aaaaaaaa'));
     assert.ok(r.replies![1].includes('first'));
-    // Row 3 is inactive (2h old) and is bridge-spawned only if seed marked it so;
-    // here all 3 are CLI-typed, so source column shows "CLI/其他".
+    // Row 3 is CLI-only → source column shows "CLI/其他", no active marker.
     assert.ok(r.replies![3].includes('CLI/其他'));
+    assert.ok(r.replies![3].includes('⚪'));
     // Footer mentions /resume usage.
     assert.ok(r.replies![4].includes('/resume <编号>'));
   } finally {
+    await removeSentinel('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
     await cleanup(cwd);
   }
 });

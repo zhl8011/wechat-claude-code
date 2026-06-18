@@ -3,7 +3,6 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { logger } from '../logger.js';
 
-export const ACTIVE_THRESHOLD_MS = 5 * 60 * 1000;
 export const PROMPT_TRUNCATE_LEN = 60;
 export const BRIDGE_SESSIONS_FILENAME = 'bridge-sessions.json';
 
@@ -177,10 +176,19 @@ export async function listSessions(cwd: string, limit = 10): Promise<SessionInfo
       });
       continue;
     }
-    const source: SessionInfo['source'] = bridgeSet.has(uuid) ? 'bridge' : 'unknown';
-    const isActive = Date.now() - stat.mtime.getTime() < ACTIVE_THRESHOLD_MS;
+    // isActive is no longer driven by jsonl mtime. The bridge itself writes
+    // to the jsonl on every send (stream-json events are appended as the
+    // agent runs), so a fresh mtime does not mean "CLI is using it" — it
+    // could just be a session we ourselves just messaged. Use bridge
+    // ownership as the signal instead: a session is "active" iff the
+    // bridge itself owns it (i.e. it appears in bridge-sessions.json).
+    // CLI-only sessions (not in the bridge set) are never flagged active,
+    // so /resume from WeChat never blocks on them with a false "CLI may
+    // be open" warning.
+    const isBridgeOwned = bridgeSet.has(uuid);
+    const source: SessionInfo['source'] = isBridgeOwned ? 'bridge' : 'unknown';
 
-    results.push({ uuid, mtime: stat.mtime, firstUserPrompt, source, isActive });
+    results.push({ uuid, mtime: stat.mtime, firstUserPrompt, source, isActive: isBridgeOwned });
   }
 
   results.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());

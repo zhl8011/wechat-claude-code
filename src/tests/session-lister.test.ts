@@ -4,7 +4,6 @@ import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  ACTIVE_THRESHOLD_MS,
   appendBridgeSessionId,
   encodeCwd,
   formatSessionList,
@@ -169,19 +168,28 @@ test('listSessions: respects limit', async () => {
   }
 });
 
-test('listSessions: marks isActive when mtime within threshold', async () => {
+test('listSessions: marks isActive when uuid is in bridge-sessions.json', async () => {
+  // isActive is no longer driven by jsonl mtime (the bridge itself writes to
+  // the jsonl on every send, so a fresh mtime does not mean "CLI is using
+  // it" — it could just be a session we ourselves just messaged). Instead,
+  // isActive = "the bridge owns this uuid" (i.e. it appears in
+  // bridge-sessions.json). CLI-only sessions (not in the bridge set) are
+  // never active, so /resume from WeChat never blocks on them.
   const cwd = uniqueCwd('active');
   await seedSessions(cwd, [
-    { uuid: 'fresh', mtimeAgoMs: 60_000, prompt: 'p' },
-    { uuid: 'stale', mtimeAgoMs: ACTIVE_THRESHOLD_MS + 60_000, prompt: 'p' },
+    { uuid: 'bridge-owned', mtimeAgoMs: 60_000, prompt: 'p' },
+    { uuid: 'cli-only', mtimeAgoMs: 60_000, prompt: 'p' },
   ]);
+  // Register exactly one of the two uuids in the bridge set.
   try {
+    await appendBridgeSessionId('bridge-owned');
     const r = await listSessions(cwd);
-    const fresh = r.find((s) => s.uuid === 'fresh')!;
-    const stale = r.find((s) => s.uuid === 'stale')!;
-    assert.equal(fresh.isActive, true);
-    assert.equal(stale.isActive, false);
+    const owned = r.find((s) => s.uuid === 'bridge-owned')!;
+    const cliOnly = r.find((s) => s.uuid === 'cli-only')!;
+    assert.equal(owned.isActive, true);
+    assert.equal(cliOnly.isActive, false);
   } finally {
+    await removeSentinel('bridge-owned');
     await cleanupCwd(cwd);
   }
 });
