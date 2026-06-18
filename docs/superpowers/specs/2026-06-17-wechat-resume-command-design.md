@@ -15,19 +15,20 @@ Shows the 10 most recently modified `.jsonl` files under `~/.claude/projects/<en
 ```
 📋 最近 10 条 session：
 
-🟢 [1] 4分钟前  桥
+🟢 [1] 4分钟前  桥 [活跃] abc12345-...
     Q: 已经编译了吗
 
-   [2] 22分钟前  CLI/其他
+   [2] 22分钟前  CLI/其他 xyz98765-...
     Q: 帮我看一下 main.c
 
-   [3] 1小时前  桥
+   [3] 1小时前  桥 fed54321-...
     Q: KConfig 怎么改
 
 发送 /resume <编号> 接管；活跃 session 加 --force
 ```
 
 - Sorted by file mtime, descending.
+- Each row includes the full UUID (so users can `/resume <uuid>` directly).
 - `Q:` shows the first user message of that session, truncated to 60 chars + `…`.
 - `🟢` + `[活跃]` = mtime is within the last 5 minutes.
 - `桥` = session was started by this bridge (recorded in `bridge-sessions.json`).
@@ -196,7 +197,7 @@ In the block where `session.sdkSessionId = result.sessionId` is assigned (around
 |---|---|---|
 | Project session dir doesn't exist | `readdir` throws ENOENT | `listSessions` returns `[]`; handler replies "暂无 session" |
 | Project dir exists but no `.jsonl` files | `readdir` returns `[]` | Same as above |
-| A `.jsonl` first line is invalid JSON | `JSON.parse` throws | Skip that file, log warn, label it `(unreadable)` |
+| A `.jsonl` first line is invalid JSON | `JSON.parse` throws | Skip that file, log warn |
 | A `.jsonl` first line is not a `user` message | `msg.role !== 'user'` | Label `(no user message)`, don't skip |
 | `fs.stat` fails on one file (permissions) | EACCES | Skip that file, log warn |
 | User enters index 99 with only 3 sessions | `sessions[idx]` undefined | Reply "编号无效，请先 /resume 查看列表" |

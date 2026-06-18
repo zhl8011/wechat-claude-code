@@ -43,24 +43,99 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max) + '…';
 }
 
-async function readFirstUserPrompt(jsonlPath: string): Promise<string | null> {
+interface ParsedSession {
+  agentName: string | null;        // user `--name` (highest priority)
+  aiTitle: string | null;          // cc-generated title
+  firstUserText: string | null;    // first text-content user line
+  hasCliTyped: boolean;            // at least one user line entrypoint=cli/sdk-cli
+}
+
+/**
+ * Read the jsonl once and pull out everything we need for the list row:
+ *   - the user's `--name` (if any)
+ *   - cc's auto-generated title (if any)
+ *   - the first text content from a user line
+ *   - whether the session has at least one user line from a real CLI / SDK
+ *     typing entrypoint (entrypoint 'cli' or 'sdk-cli')
+ *
+ * Returns null when the file is unreadable or contains a non-JSON line
+ * (corrupted session — skip it from the list).
+ */
+async function readSessionMetadata(jsonlPath: string): Promise<ParsedSession | null> {
+  let content: string;
   try {
-    const content = await fs.readFile(jsonlPath, 'utf-8');
-    const firstLine = content.split('\n', 2)[0];
-    const evt = JSON.parse(firstLine) as { message?: { role?: string; content?: Array<{ type: string; text?: string }> } };
-    const msg = evt?.message;
-    if (msg?.role !== 'user' || !Array.isArray(msg.content)) {
-      return '(no user message)';
-    }
-    const textPart = msg.content.find((c) => c.type === 'text');
-    return truncate(textPart?.text ?? '', PROMPT_TRUNCATE_LEN);
+    content = await fs.readFile(jsonlPath, 'utf-8');
   } catch (err) {
-    logger.warn('session-lister: failed to parse first user prompt', {
-      path: jsonlPath,
-      error: (err as Error).message,
-    });
+    logger.warn('session-lister: read failed', { path: jsonlPath, error: (err as Error).message });
     return null;
   }
+  const out: ParsedSession = {
+    agentName: null,
+    aiTitle: null,
+    firstUserText: null,
+    hasCliTyped: false,
+  };
+  for (const line of content.split('\n')) {
+    if (!line) continue;
+    let evt: {
+      type?: string;
+      agentName?: string;
+      aiTitle?: string;
+      entrypoint?: string;
+      message?: { content?: unknown };
+    };
+    try {
+      evt = JSON.parse(line);
+    } catch (parseErr) {
+      logger.warn('session-lister: skipping file with unparseable line', {
+        path: jsonlPath,
+        error: (parseErr as Error).message,
+      });
+      return null;
+    }
+    if (evt.type === 'agent-name' && typeof evt.agentName === 'string' && !out.agentName) {
+      out.agentName = evt.agentName;
+      continue;
+    }
+    if (evt.type === 'ai-title' && typeof evt.aiTitle === 'string' && !out.aiTitle) {
+      out.aiTitle = evt.aiTitle;
+      continue;
+    }
+    if (evt.type === 'user') {
+      // Track whether this session ever has a user-typed turn. entrypoint
+      // 'sdk-py' is the code-review skill's marker; we exclude sessions
+      // that consist solely of such turns. entrypoint 'cli' and 'sdk-cli'
+      // are real user input — including `<local-command-caveat>` rows
+      // (the user invoked /init, /exit, /resume, etc.).
+      if (evt.entrypoint === 'cli' || evt.entrypoint === 'sdk-cli') {
+        out.hasCliTyped = true;
+      }
+      if (out.firstUserText === null) {
+        const raw = evt.message?.content;
+        if (typeof raw === 'string' && raw.length > 0) {
+          out.firstUserText = raw;
+        } else if (Array.isArray(raw)) {
+          const textPart = (raw as Array<{ type?: string; text?: string }>).find((c) => c.type === 'text');
+          if (textPart?.text) out.firstUserText = textPart.text;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Display label for a session, mirroring Claude Code's `/resume` order:
+ *   1. user `--name` agentName          (highest priority)
+ *   2. cc's auto-generated aiTitle
+ *   3. first text user prompt          (fallback, e.g. "/clear")
+ *   4. `(empty)`                        (last resort)
+ */
+function displayTitle(meta: ParsedSession): string {
+  if (meta.agentName) return meta.agentName;
+  if (meta.aiTitle) return meta.aiTitle;
+  if (meta.firstUserText) return truncate(meta.firstUserText, PROMPT_TRUNCATE_LEN);
+  return '(empty)';
 }
 
 export async function listSessions(cwd: string, limit = 10): Promise<SessionInfo[]> {
@@ -87,8 +162,21 @@ export async function listSessions(cwd: string, limit = 10): Promise<SessionInfo
       continue;
     }
 
-    const firstUserPrompt = await readFirstUserPrompt(full);
-    if (firstUserPrompt === null) continue;
+    let firstUserPrompt: string;
+    let meta: ParsedSession;
+    try {
+      const m = await readSessionMetadata(full);
+      if (m === null) continue; // unreadable / corrupted
+      if (!m.hasCliTyped) continue; // purely skill-driven (e.g. code-review) — skip
+      meta = m;
+      firstUserPrompt = displayTitle(m);
+    } catch (err) {
+      logger.warn('session-lister: failed to read user prompts', {
+        path: full,
+        error: (err as Error).message,
+      });
+      continue;
+    }
     const source: SessionInfo['source'] = bridgeSet.has(uuid) ? 'bridge' : 'unknown';
     const isActive = Date.now() - stat.mtime.getTime() < ACTIVE_THRESHOLD_MS;
 
