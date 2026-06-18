@@ -39,11 +39,18 @@ async function seed(cwd: string, sessions: Array<{ uuid: string; mtimeAgoMs: num
   await fs.mkdir(dir, { recursive: true });
   for (const s of sessions) {
     const path = join(dir, `${s.uuid}.jsonl`);
-    const evt = {
-      type: 'user',
-      message: { role: 'user', content: [{ type: 'text', text: s.prompt ?? '' }] },
-    };
-    await fs.writeFile(path, JSON.stringify(evt) + '\n');
+    // Mimic real Claude Code: last-prompt metadata prefix + user-typed
+    // entrypoint=cli, promptSource=typed so the lister picks this row.
+    const lines = [
+      JSON.stringify({ type: 'last-prompt' }),
+      JSON.stringify({
+        type: 'user',
+        entrypoint: 'cli',
+        promptSource: 'typed',
+        message: { role: 'user', content: s.prompt ?? '' },
+      }),
+    ];
+    await fs.writeFile(path, lines.join('\n') + '\n');
     const t = new Date(Date.now() - s.mtimeAgoMs);
     await fs.utimes(path, t, t);
   }

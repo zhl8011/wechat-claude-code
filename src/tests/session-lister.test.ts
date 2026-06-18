@@ -35,6 +35,11 @@ async function seedSessions(
     prompt?: string;
     role?: string;
     garbage?: boolean;
+    contentAsArray?: boolean;
+    entrypoint?: 'cli' | 'sdk-py' | 'sdk-cli';
+    promptSource?: 'typed' | 'sdk';
+    agentName?: string;
+    aiTitle?: string;
   }>,
 ): Promise<void> {
   const dir = getSessionDir(cwd);
@@ -45,14 +50,41 @@ async function seedSessions(
     if (s.garbage) {
       content = '{not valid json';
     } else {
-      const evt = {
+      // Mimic real Claude Code jsonl layout:
+      //   line 1: { type: "last-prompt", ... }
+      //   line 2: { type: "mode", ... }
+      //   line 3: { type: "permission-mode", ... }
+      //   line 4..N: { type: "user", message: { content: <string|array> } }
+      // message.content is a plain string for normal text prompts and an
+      // array of {type, text} parts only for tool_result / image attachments.
+      // entrypoint + promptSource mark whether the user actually typed the
+      // prompt vs the SDK / a skill injecting it.
+      // agent-name + ai-title appear as separate events in the jsonl and
+      // win over the first user prompt when present.
+      const lines: string[] = [
+        JSON.stringify({ type: 'last-prompt' }),
+        JSON.stringify({ type: 'mode' }),
+        JSON.stringify({ type: 'permission-mode' }),
+      ];
+      if (s.agentName) {
+        lines.push(JSON.stringify({ type: 'agent-name', agentName: s.agentName }));
+      }
+      if (s.aiTitle) {
+        lines.push(JSON.stringify({ type: 'ai-title', aiTitle: s.aiTitle }));
+      }
+      const userContent = s.contentAsArray
+        ? [{ type: 'text', text: s.prompt ?? '' }]
+        : (s.prompt ?? '');
+      const userLine: Record<string, unknown> = {
         type: s.role === 'system' ? 'system' : 'user',
-        message: {
-          role: s.role ?? 'user',
-          content: [{ type: 'text', text: s.prompt ?? '' }],
-        },
+        message: { role: s.role ?? 'user', content: userContent },
       };
-      content = JSON.stringify(evt) + '\n';
+      // Default: real terminal user. Tests covering skill-injected sessions
+      // override with `entrypoint: 'sdk-py'`, `promptSource: 'sdk'`, etc.
+      userLine.entrypoint = s.entrypoint ?? 'cli';
+      userLine.promptSource = s.promptSource ?? 'typed';
+      lines.push(JSON.stringify(userLine));
+      content = lines.join('\n') + '\n';
     }
     await fs.writeFile(path, content);
     const t = new Date(Date.now() - s.mtimeAgoMs);
@@ -167,6 +199,53 @@ test('listSessions: truncates long prompt to 60 chars + ellipsis', async () => {
   }
 });
 
+test('listSessions: extracts user prompt after metadata prefix lines (real Claude Code layout)', async () => {
+  // Real Claude Code jsonl starts with type=last-prompt, mode, permission-mode,
+  // attachment entries BEFORE the first type=user row. The lister must skip
+  // these and find the actual user message.
+  const cwd = uniqueCwd('reallayout');
+  const dir = getSessionDir(cwd);
+  await fs.mkdir(dir, { recursive: true });
+  const path = join(dir, 'real.jsonl');
+  const lines = [
+    JSON.stringify({ type: 'last-prompt', sessionId: 'real' }),
+    JSON.stringify({ type: 'mode' }),
+    JSON.stringify({ type: 'permission-mode' }),
+    JSON.stringify({ type: 'attachment' }),
+    JSON.stringify({ type: 'attachment' }),
+    JSON.stringify({ type: 'attachment' }),
+    JSON.stringify({
+      type: 'user',
+      entrypoint: 'cli',
+      promptSource: 'typed',
+      message: { role: 'user', content: '现在我们整理几个工作' },
+    }),
+  ];
+  await fs.writeFile(path, lines.join('\n') + '\n');
+  try {
+    const r = await listSessions(cwd);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].firstUserPrompt, '现在我们整理几个工作');
+  } finally {
+    await cleanupCwd(cwd);
+  }
+});
+
+test('listSessions: extracts user prompt from content array (attachment / tool_result shape)', async () => {
+  // When the user message carries image attachments or tool_result blocks,
+  // message.content is an array of typed parts and we pick the text part.
+  const cwd = uniqueCwd('arraycontent');
+  await seedSessions(cwd, [
+    { uuid: 'arr', mtimeAgoMs: 0, prompt: '看这张图', contentAsArray: true },
+  ]);
+  try {
+    const r = await listSessions(cwd);
+    assert.equal(r[0].firstUserPrompt, '看这张图');
+  } finally {
+    await cleanupCwd(cwd);
+  }
+});
+
 test('listSessions: skips jsonl with garbage first line', async () => {
   const cwd = uniqueCwd('garbage');
   await seedSessions(cwd, [
@@ -183,13 +262,158 @@ test('listSessions: skips jsonl with garbage first line', async () => {
   }
 });
 
-test('listSessions: non-user first line yields placeholder, not skip', async () => {
-  const cwd = uniqueCwd('norole');
-  await seedSessions(cwd, [{ uuid: 'sys', mtimeAgoMs: 0, role: 'system', prompt: 'init' }]);
+test('listSessions: skips session where every user line is entrypoint=sdk-py', async () => {
+  // entrypoint 'sdk-py' is the code-review skill's marker. Sessions that
+  // contain ONLY such rows (no user-typed turn at all) should be dropped
+  // from the list — the user can't usefully resume a conversation they
+  // never spoke in.
+  const cwd = uniqueCwd('skillonly');
+  await seedSessions(cwd, [
+    { uuid: 'autorev', mtimeAgoMs: 0, prompt: 'Review this change for security vulnerabilities.', entrypoint: 'sdk-py', promptSource: 'sdk' },
+  ]);
+  try {
+    const r = await listSessions(cwd);
+    assert.equal(r.length, 0);
+  } finally {
+    await cleanupCwd(cwd);
+  }
+});
+
+test('listSessions: keeps session with sdk-py row followed by cli user-typed one', async () => {
+  // Real sessions often start with a code-review prompt (sdk-py row) and
+  // then the user types a follow-up via cc (cli row). The lister should
+  // keep the session — it has at least one user-typed turn — and display
+  // the first user prompt as a fallback (matches cc /resume behaviour
+  // when there's no agentName / aiTitle).
+  const cwd = uniqueCwd('mixed');
+  const path = join(getSessionDir(cwd), 'mixed.jsonl');
+  await fs.mkdir(getSessionDir(cwd), { recursive: true });
+  const lines = [
+    JSON.stringify({ type: 'last-prompt' }),
+    JSON.stringify({ type: 'user', entrypoint: 'sdk-py', promptSource: 'sdk', message: { role: 'user', content: 'Review this change for security vulnerabilities.' } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: '...review response...' } }),
+    JSON.stringify({ type: 'user', entrypoint: 'cli', promptSource: 'typed', message: { role: 'user', content: '看一下 main.c 第 42 行' } }),
+  ];
+  await fs.writeFile(path, lines.join('\n') + '\n');
   try {
     const r = await listSessions(cwd);
     assert.equal(r.length, 1);
-    assert.equal(r[0].firstUserPrompt, '(no user message)');
+    // First user prompt is shown when no title is set, even if that first
+    // row was the skill-injected one.
+    assert.equal(r[0].firstUserPrompt, 'Review this change for security vulnerabilities.');
+  } finally {
+    await cleanupCwd(cwd);
+  }
+});
+
+test('listSessions: keeps <local-command-caveat> slash-command rows', async () => {
+  // When the user runs /exit or /init in cc, the resulting user-typed row
+  // starts with <local-command-caveat> or <command-message>. Those are real
+  // user input (the user invoked the slash command) and should be listed.
+  const cwd = uniqueCwd('slashcmd');
+  const path = join(getSessionDir(cwd), 'exit.jsonl');
+  await fs.mkdir(getSessionDir(cwd), { recursive: true });
+  const lines = [
+    JSON.stringify({ type: 'last-prompt' }),
+    JSON.stringify({
+      type: 'user',
+      entrypoint: 'cli',
+      message: { role: 'user', content: '<local-command-caveat>Caveat: the messages below were generated by the user while running local commands. DO NOT respond</local-command-caveat>\n<command-name>/exit</command-name>' },
+    }),
+  ];
+  await fs.writeFile(path, lines.join('\n') + '\n');
+  try {
+    const r = await listSessions(cwd);
+    assert.equal(r.length, 1);
+    assert.ok(r[0].firstUserPrompt.startsWith('<local-command-caveat>'));
+  } finally {
+    await cleanupCwd(cwd);
+  }
+});
+
+test('listSessions: prefers agentName over aiTitle and user prompt', async () => {
+  // Mirrors cc's /resume ordering: user's --name wins.
+  const cwd = uniqueCwd('agentname');
+  await seedSessions(cwd, [
+    {
+      uuid: 'withall',
+      mtimeAgoMs: 0,
+      prompt: 'first user prompt text',
+      agentName: 'my-named-session',
+      aiTitle: 'cc auto title',
+    },
+  ]);
+  try {
+    const r = await listSessions(cwd);
+    assert.equal(r[0].firstUserPrompt, 'my-named-session');
+  } finally {
+    await cleanupCwd(cwd);
+  }
+});
+
+test('listSessions: prefers aiTitle over first user prompt when no agentName', async () => {
+  // cc's auto-generated title appears when the user didn't --name the session.
+  const cwd = uniqueCwd('aititle');
+  await seedSessions(cwd, [
+    {
+      uuid: 'withtitle',
+      mtimeAgoMs: 0,
+      prompt: 'first user prompt text',
+      aiTitle: 'cc auto generated title',
+    },
+  ]);
+  try {
+    const r = await listSessions(cwd);
+    assert.equal(r[0].firstUserPrompt, 'cc auto generated title');
+  } finally {
+    await cleanupCwd(cwd);
+  }
+});
+
+test('listSessions: falls back to first user prompt when no title is set', async () => {
+  // Slash commands like /clear don't get an ai-title; the first user
+  // prompt itself is the only label.
+  const cwd = uniqueCwd('notitle');
+  await seedSessions(cwd, [
+    { uuid: 'plain', mtimeAgoMs: 0, prompt: '/clear' },
+  ]);
+  try {
+    const r = await listSessions(cwd);
+    assert.equal(r[0].firstUserPrompt, '/clear');
+  } finally {
+    await cleanupCwd(cwd);
+  }
+});
+
+test('listSessions: keeps SDK-user session (entrypoint=sdk-cli, promptSource=typed)', async () => {
+  // A user typing through the SDK (e.g. claude-code-vscode or another
+  // tool that uses the Agent SDK) is still a real user. promptSource='typed'
+  // marks it as such, regardless of entrypoint.
+  const cwd = uniqueCwd('sdkuser');
+  await seedSessions(cwd, [
+    { uuid: 'sdktyped', mtimeAgoMs: 0, prompt: 'vscode 编辑器发的消息', entrypoint: 'sdk-cli', promptSource: 'typed' },
+  ]);
+  try {
+    const r = await listSessions(cwd);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].firstUserPrompt, 'vscode 编辑器发的消息');
+  } finally {
+    await cleanupCwd(cwd);
+  }
+});
+
+test('listSessions: lists jsonl with no user prompt and no title as (empty)', async () => {
+  // The lister keeps sessions that have at least one user-typed turn,
+  // even when both the title fields and the first text content are empty
+  // (e.g. an image-only prompt). The display label falls back to "(empty)".
+  const cwd = uniqueCwd('emptycontent');
+  await seedSessions(cwd, [
+    { uuid: 'empty', mtimeAgoMs: 0, prompt: '' },
+  ]);
+  try {
+    const r = await listSessions(cwd);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].firstUserPrompt, '(empty)');
   } finally {
     await cleanupCwd(cwd);
   }
