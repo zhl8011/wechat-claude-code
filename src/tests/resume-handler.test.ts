@@ -130,10 +130,12 @@ test('handleResume: index out of range replies with error', async () => {
   }
 });
 
-test('handleResume: active session without --force is rejected', async () => {
+test('handleResume: bridge-owned session is taken over without --force', async () => {
+  // isActive now means "the bridge itself owns this uuid". Taking over a
+  // bridge-owned session IS the normal /resume flow (it's the session the
+  // user was just talking to from WeChat) — do not block it with a
+  // "CLI may still be open" warning. /resume just resumes.
   const cwd = uniqueCwd('active');
-  // isActive is now "bridge owns this uuid" (not jsonl mtime). Mark it
-  // explicitly via appendBridgeSessionId so the lister flags it active.
   await appendBridgeSessionId('fresh');
   try {
     await seed(cwd, [{ uuid: 'fresh', mtimeAgoMs: 60_000, prompt: 'p' }]);
@@ -141,27 +143,32 @@ test('handleResume: active session without --force is rejected', async () => {
     const ctx = makeCtx(cwd, captured);
     const r = await handleResume(ctx, '1');
     assert.equal(r.handled, true);
-    assert.ok(r.reply!.includes('活跃'));
-    assert.equal(captured.calls.length, 0);
+    // Succeeds and updates the session to the bridge-owned uuid.
+    assert.equal(captured.calls.length, 1);
+    assert.equal(captured.calls[0].sdkSessionId, 'fresh');
+    assert.ok(r.reply!.includes('已接管'));
   } finally {
     await removeSentinel('fresh');
     await cleanup(cwd);
   }
 });
 
-test('handleResume: active session with --force resumes', async () => {
+test('handleResume: --force is accepted (currently a no-op, reserved for future use)', async () => {
+  // --force is kept in the API for forward compatibility (e.g. if we
+  // later add CLI-process detection to detect "user wants to interrupt
+  // a cc running in their terminal"). For now it is just a token that
+  // gets stripped before parsing the target, so /resume 1 --force and
+  // /resume 1 behave identically.
   const cwd = uniqueCwd('force');
-  await appendBridgeSessionId('fresh');
+  await seed(cwd, [{ uuid: 'fresh', mtimeAgoMs: 60_000, prompt: 'p' }]);
+  const captured: CapturedUpdate = { calls: [] };
+  const ctx = makeCtx(cwd, captured);
   try {
-    await seed(cwd, [{ uuid: 'fresh', mtimeAgoMs: 60_000, prompt: 'p' }]);
-    const captured: CapturedUpdate = { calls: [] };
-    const ctx = makeCtx(cwd, captured);
     const r = await handleResume(ctx, '1 --force');
     assert.equal(r.handled, true);
     assert.equal(captured.calls.length, 1);
     assert.equal(captured.calls[0].sdkSessionId, 'fresh');
   } finally {
-    await removeSentinel('fresh');
     await cleanup(cwd);
   }
 });

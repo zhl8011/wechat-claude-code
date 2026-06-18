@@ -281,29 +281,19 @@ export async function handleResume(ctx: CommandContext, args: string): Promise<C
     return { reply: '格式无效，参考：/resume 1 或 /resume <uuid>', handled: true };
   }
 
-  // Active-session check (applies to both numeric and UUID forms)
-  const sessions = await listSessions(cwd, 100);
-  const targetSess = sessions.find((s) => s.uuid === uuid);
-  if (targetSess?.isActive && !force) {
-    return {
-      reply: `⚠️ session 活跃（${formatAgeForReply(targetSess.mtime)}写过），可能是 CLI 还开着。\n强行接管加 --force：/resume ${target} --force`,
-      handled: true,
-    };
-  }
-
+  // No "active session" gate: isActive now means "the bridge itself owns
+  // this uuid" (see session-lister.isActive), and taking over a bridge-
+  // owned session IS the normal /resume flow — it's the session the user
+  // was just talking to from WeChat. The legacy gate used jsonl mtime and
+  // produced false positives because the bridge itself appends to the
+  // jsonl on every send. /resume simply takes over and updates the session.
+  // --force is kept in the API for forward compatibility (e.g. future
+  // "interrupt a CLI running in the user's terminal" mode) and is a no-op
+  // today.
+  void force;
   ctx.updateSession({ sdkSessionId: uuid });
   return {
     reply: `✅ 已接管 session ${uuid.slice(0, 8)}\n下一条消息会用该上下文回复。`,
     handled: true,
   };
-}
-
-function formatAgeForReply(d: Date): string {
-  const ms = Date.now() - d.getTime();
-  if (ms < 60_000) return '刚刚';
-  const m = Math.floor(ms / 60_000);
-  if (m < 60) return `${m}分钟前`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}小时前`;
-  return `${Math.floor(h / 24)}天前`;
 }
